@@ -540,19 +540,10 @@ class Britney(object):
     # Data reading/writing methods
     # ----------------------------
 
-    def read_sources(self, basedir, intern=intern):
-        """Read the list of source packages from the specified directory
-        
-        The source packages are read from the `Sources' file within the
-        directory specified as `basedir' parameter. Considering the
-        large amount of memory needed, not all the fields are loaded
-        in memory. The available fields are Version, Maintainer and Section.
+    def _read_sources_file(self, filename, sources=None, intern=intern):
+        if sources is None:
+            sources = {}
 
-        The method returns a list where every item represents a source
-        package as a dictionary.
-        """
-        sources = {}
-        filename = os.path.join(basedir, "Sources")
         self.__log("Loading source packages from %s" % filename)
 
         Packages = apt_pkg.TagFile(open(filename))
@@ -579,7 +570,7 @@ class Britney(object):
                            ]
         return sources
 
-    def read_binaries(self, basedir, distribution, arch, intern=intern):
+    def read_sources(self, basedir, intern=intern):
         """Read the list of binary packages from the specified directory
         
         The binary packages are read from the `Packages_${arch}' files
@@ -603,12 +594,16 @@ class Britney(object):
         packages that provide them.
         """
 
-        packages = {}
-        provides = {}
-        sources = self.sources
+        filename = os.path.join(basedir, "Sources")
+        sources = self._read_sources_file(filename, intern=intern)
 
-        filename = os.path.join(basedir, "Packages_%s" % arch)
+        return sources
+
+    def _read_packages_file(self, filename, arch, srcdist, packages=None, intern=intern):
         self.__log("Loading binary packages from %s" % filename)
+
+        if packages is None:
+            packages = {}
 
         Packages = apt_pkg.TagFile(open(filename))
         get_field = Packages.section.get
@@ -671,19 +666,61 @@ class Britney(object):
 
             pkgarch = "%s/%s" % (pkg,arch)
             # if the source package is available in the distribution, then register this binary package
-            if dpkg[SOURCE] in sources[distribution]:
+            if dpkg[SOURCE] in srcdist:
                 # There may be multiple versions of any arch:all packages
                 # (in unstable) if some architectures have out-of-date
                 # binaries.  We only want to include the package in the
                 # source -> binary mapping once. It doesn't matter which
                 # of the versions we include as only the package name and
                 # architecture are recorded.
-                if pkgarch not in sources[distribution][dpkg[SOURCE]][BINARIES]:
-                    sources[distribution][dpkg[SOURCE]][BINARIES].append(pkgarch)
+                if pkgarch not in srcdist[dpkg[SOURCE]][BINARIES]:
+                    srcdist[dpkg[SOURCE]][BINARIES].append(pkgarch)
             # if the source package doesn't exist, create a fake one
             else:
-                sources[distribution][dpkg[SOURCE]] = [dpkg[SOURCEVER], 'faux', [pkgarch], None, True]
+                srcdist[dpkg[SOURCE]] = [dpkg[SOURCEVER], 'faux', [pkgarch], None, True]
 
+            # add the resulting dictionary to the package list
+            packages[pkg] = dpkg
+
+        return packages
+
+    def read_binaries(self, basedir, distribution, arch, intern=intern):
+        """Read the list of binary packages from the specified directory
+
+        The binary packages are read from the `Packages' files for `arch'.
+
+        If no components are specified, a single file named
+        `Packages_${arch}' is expected to be within the directory
+        specified as `basedir' parameter, replacing ${arch} with the
+        value of the arch parameter.
+
+        Considering the
+        large amount of memory needed, not all the fields are loaded
+        in memory. The available fields are Version, Source, Multi-Arch,
+        Depends, Conflicts, Provides and Architecture.
+
+        After reading the packages, reverse dependencies are computed
+        and saved in the `rdepends' keys, and the `Provides' field is
+        used to populate the virtual packages list.
+
+        The dependencies are parsed with the apt_pkg.parse_depends method,
+        and they are stored both as the format of its return value and
+        text.
+
+        The method returns a tuple. The first element is a list where
+        every item represents a binary package as a dictionary; the second
+        element is a dictionary which maps virtual packages to real
+        packages that provide them.
+        """
+
+        filename = os.path.join(basedir, "Packages_%s" % arch)
+        packages = self._read_packages_file(filename, arch,
+                         self.sources[distribution],  intern=intern)
+
+        # create provides
+        provides = {}
+
+        for pkg, dpkg in packages.iteritems():
             # register virtual packages and real packages that provide them
             if dpkg[PROVIDES]:
                 parts = map(string.strip, dpkg[PROVIDES].split(","))
@@ -692,10 +729,9 @@ class Britney(object):
                         provides[p] = []
                     provides[p].append(pkg)
                 dpkg[PROVIDES] = parts
-            else: dpkg[PROVIDES] = []
+            else:
+                dpkg[PROVIDES] = []
 
-            # add the resulting dictionary to the package list
-            packages[pkg] = dpkg
 
         # loop again on the list of packages to register reverse dependencies and conflicts
         register_reverses(packages, provides, check_doubles=False)
