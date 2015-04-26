@@ -399,6 +399,8 @@ class Britney(object):
                                help="do not build the non-installability status, use the cache from file")
         parser.add_option("", "--print-uninst", action="store_true", dest="print_uninst", default=False,
                                help="just print a summary of uninstallable packages")
+        parser.add_option("", "--components", action="store", dest="components",
+                               help="Sources/Packages are laid out by components listed (, sep)")
         (self.options, self.args) = parser.parse_args()
         
         # integrity checks
@@ -423,6 +425,11 @@ class Britney(object):
             elif not hasattr(self.options, k.lower()) or \
                  not getattr(self.options, k.lower()):
                 setattr(self.options, k.lower(), v)
+
+        if getattr(self.options, "components", None):
+            self.options.components = [s.strip() for s in self.options.components.split(",")]
+        else:
+            self.options.components = None
 
         if not hasattr(self.options, "heidi_delta_output"):
             self.options.heidi_delta_output = self.options.heidi_output + "Delta"
@@ -571,31 +578,25 @@ class Britney(object):
         return sources
 
     def read_sources(self, basedir, intern=intern):
-        """Read the list of binary packages from the specified directory
+        """Read the list of source packages from the specified directory
         
-        The binary packages are read from the `Packages_${arch}' files
-        within the directory specified as `basedir' parameter, replacing
-        ${arch} with the value of the arch parameter. Considering the
+        The source packages are read from the `Sources' file within the
+        directory specified as `basedir' parameter. Considering the
         large amount of memory needed, not all the fields are loaded
-        in memory. The available fields are Version, Source, Multi-Arch,
-        Depends, Conflicts, Provides and Architecture.
-        
-        After reading the packages, reverse dependencies are computed
-        and saved in the `rdepends' keys, and the `Provides' field is
-        used to populate the virtual packages list.
+        in memory. The available fields are Version, Maintainer and Section.
 
-        The dependencies are parsed with the apt_pkg.parse_depends method,
-        and they are stored both as the format of its return value and
-        text.
-
-        The method returns a tuple. The first element is a list where
-        every item represents a binary package as a dictionary; the second
-        element is a dictionary which maps virtual packages to real
-        packages that provide them.
+        The method returns a list where every item represents a source
+        package as a dictionary.
         """
 
-        filename = os.path.join(basedir, "Sources")
-        sources = self._read_sources_file(filename, intern=intern)
+        if self.options.components:
+            sources = {}
+            for component in self.options.components:
+                filename = os.path.join(basedir, component, "source", "Sources")
+                self._read_sources_file(filename, sources, intern=intern)
+        else:
+            filename = os.path.join(basedir, "Sources")
+            sources = self._read_sources_file(filename, intern=intern)
 
         return sources
 
@@ -689,6 +690,10 @@ class Britney(object):
 
         The binary packages are read from the `Packages' files for `arch'.
 
+        If components are specified, the files
+        for each component are loaded according to the usual Debian mirror
+        layout.
+
         If no components are specified, a single file named
         `Packages_${arch}' is expected to be within the directory
         specified as `basedir' parameter, replacing ${arch} with the
@@ -713,12 +718,22 @@ class Britney(object):
         packages that provide them.
         """
 
-        filename = os.path.join(basedir, "Packages_%s" % arch)
-        packages = self._read_packages_file(filename, arch,
-                         self.sources[distribution],  intern=intern)
+        self.__log("Components == %r" % (self.options.components))
+        if self.options.components:
+            packages = {}
+            for component in self.options.components:
+                filename = os.path.join(basedir,
+                             component, "binary-%s" % arch, "Packages")
+                self._read_packages_file(filename, arch,
+                      self.sources[distribution], packages, intern=intern)
+        else:
+            filename = os.path.join(basedir, "Packages_%s" % arch)
+            packages = self._read_packages_file(filename, arch,
+                             self.sources[distribution],  intern=intern)
 
         # create provides
         provides = {}
+
 
         for pkg, dpkg in packages.iteritems():
             # register virtual packages and real packages that provide them
